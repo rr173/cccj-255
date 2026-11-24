@@ -5,7 +5,7 @@ each action is a non-empty byte code, and a frame body is just the concatenation
 of the codes for the actions in order. The receiving station wraps each body in an
 outer frame that names the terminal configuration version and the body length.
 
-This package does two jobs:
+This package does three jobs:
 
 1. **Offline release audit.** Decide, exactly, whether a configuration can ever
    produce *the same body for two different action sequences*. If it can, the
@@ -14,8 +14,12 @@ This package does two jobs:
 2. **Streaming reception.** Parse a continuous byte stream of frames, feed each
    complete frame to the approved configuration its header names, and return the
    ordered actions with half-open body byte spans — or a whole-frame rejection.
+3. **Pre-switch historical compatibility.** Before replacing the configuration,
+   replay a captured history of frame bodies under both the current and the
+   candidate configuration and report whether every record still names the same
+   ordered actions. The candidate must pass the release audit first.
 
-Both live in `scanflow/`. No third-party dependencies; Python 3.9+.
+All three live in `scanflow/`. No third-party dependencies; Python 3.9+.
 
 ## The conflict rule
 
@@ -111,6 +115,30 @@ Returned outcomes per region of the stream:
 An approved configuration is immutable for the life of the receiver, so a version
 already in use keeps its reading even after a later configuration is refused.
 
+## Pre-switch historical compatibility
+
+The audit proves a candidate cannot spell one body two ways. It does **not** prove
+that already-captured bodies still mean the same business actions after the switch.
+`check-compat` adds that evidence check. Each history line is
+`<record-id> <body-hex>`; every record is decoded completely under both
+configurations. Same ordered action names on both sides = compatible. A candidate
+that cannot decode the body, or names a different sequence, is incompatible. A
+current-side failure (no unique reading), a malformed line, or a duplicate id is
+invalid evidence — no verdict is issued.
+
+The overall verdict is replaceable only when the candidate audits clean, the
+history has at least one record, and every record is compatible. The history file
+is streamed line by line and the JSON report replaces its destination atomically,
+only after every record has been validated; on any error an existing report is
+left untouched. Full format and schema: [`docs/compatibility-check.md`](docs/compatibility-check.md).
+
+```bash
+python3 -m scanflow.cli check-compat \
+    --current examples/good.json --candidate examples/good_next.json \
+    --history examples/history.txt --report compat-report.json
+# exit 0 replaceable, 3 not replaceable, 2 invalid evidence, 1 report write failed
+```
+
 ## Usage
 
 ```bash
@@ -123,6 +151,11 @@ PYTHONPATH=. python3 -m scanflow.cli audit-dir examples/
 # Receive a captured stream; chunk size only affects buffering, never parsing
 PYTHONPATH=. python3 -m scanflow.cli receive --config examples/good.json \
     --chunks 7 --json < capture.bin
+
+# Check captured history reads identically under a candidate before switching
+PYTHONPATH=. python3 -m scanflow.cli check-compat \
+    --current examples/good.json --candidate examples/good_next.json \
+    --history examples/history.txt --report compat-report.json
 ```
 
 Library:
@@ -147,8 +180,9 @@ PYTHONPATH=. python3 -I -m unittest discover -s tests -v
 ```
 
 The suite cross-checks the audit against exhaustive decoding on small random
-configurations, exercises every rejection path, and verifies that arbitrary chunk
-boundaries produce identical events.
+configurations, exercises every rejection path, verifies that arbitrary chunk
+boundaries produce identical events, and covers the compatibility check's verdict
+rules, streaming, and atomic report replacement.
 
 ## Limits worth knowing
 

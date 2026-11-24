@@ -1,0 +1,20 @@
+{
+  "version": "v1-next",
+  "wire": 4,
+  "codes": {
+    "start": "0a",
+    "stop": "0b",
+    "increment": "0a0b",
+    "reset": "0c"
+  },
+  "flow": {
+    "start": "idle",
+    "accepts": ["done"],
+    "transitions": [
+      ["idle", "start", "running"],
+      ["running", "increment", "running"],
+      ["running", "reset", "running"],
+      ["running", "stop", "done"]
+    ]
+  }
+}

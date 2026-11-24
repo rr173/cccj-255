@@ -4,11 +4,22 @@
     python3 -m scanflow.cli audit-dir CONFIG_DIR [--json]
     python3 -m scanflow.cli receive --config CONFIG.json [--max-body N] \
                                      [--chunks N] [--json] < stream.bin
+    python3 -m scanflow.cli check-compat --current CUR.json \
+                                     --candidate CAND.json --history FILE \
+                                     [--report OUT.json] [--json]
 
 ``audit`` exits 0 when the configuration is releasable, 3 when a release conflict
 is found, and 2 on a malformed configuration or an incomplete audit.  ``receive``
 reads the whole byte stream, feeds it to the streaming receiver in chunks of the
 given size, and prints one JSON line per event.
+
+``check-compat`` audits the candidate, then decodes every ``<record-id> <body-hex>``
+line of the history under both configurations.  Exit codes: 0 = replaceable,
+3 = not replaceable (candidate or records incompatible), 2 = invalid evidence or
+evidence too large to check exhaustively (missing/malformed configuration,
+candidate audit failure, malformed history line, duplicate id, current-side decode
+failure), 1 = the report could not be written.  The report is only replaced after
+every record has been validated; see ``docs/compatibility-check.md``.
 """
 
 from __future__ import annotations
@@ -20,6 +31,13 @@ from pathlib import Path
 from typing import List, Optional
 
 from .audit import AuditIncomplete, audit
+from .compat import (
+    CandidateAuditIncomplete,
+    CandidateNotReleasable,
+    CompatibilityError,
+    ReportWriteError,
+    check_compatibility,
+)
 from .config import CodeConfig, ConfigError
 from .receiver import DEFAULT_MAX_BODY, Receiver
 from .registry import ConfigRejected, Registry, VersionConflict, load_registry_dir
@@ -110,6 +128,61 @@ def _cmd_receive(args: argparse.Namespace) -> int:
     return 0
 
 
+def _read_config(path: str) -> CodeConfig:
+    return CodeConfig.from_json_text(Path(path).read_text(encoding="utf-8"))
+
+
+def _cmd_check_compat(args: argparse.Namespace) -> int:
+    try:
+        current = _read_config(args.current)
+        candidate = _read_config(args.candidate)
+    except (ConfigError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    try:
+        summary = check_compatibility(
+            current,
+            candidate,
+            args.history,
+            report_path=args.report,
+            max_product_states=args.max_product_states,
+        )
+    except (CandidateNotReleasable, CandidateAuditIncomplete) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        if hasattr(exc, "report"):
+            print(json.dumps(exc.report.to_json(), indent=2, sort_keys=True),
+                  file=sys.stderr)
+        return 2
+    except ReportWriteError as exc:
+        print(f"error: could not write report: {exc}", file=sys.stderr)
+        return 1
+    except CompatibilityError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except OSError as exc:
+        print(f"error: could not write report: {exc}", file=sys.stderr)
+        return 1
+
+    if args.json:
+        out = summary.to_json()
+        out["report"] = None if args.report is None else str(args.report)
+        print(json.dumps(out, indent=2, sort_keys=True))
+    else:
+        verdict = "REPLACEABLE" if summary.replaceable else "NOT REPLACEABLE"
+        print(f"current {summary.current_version!r} -> candidate "
+              f"{summary.candidate_version!r}: {verdict}")
+        print(f"records: {summary.total}, compatible: {summary.compatible}, "
+              f"incompatible: {summary.incompatible}")
+        if not summary.replaceable:
+            print("some historical records read differently under the candidate")
+        if args.report is not None:
+            print(f"report: {args.report}")
+    if not summary.replaceable:
+        return 3
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="scanflow")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -134,6 +207,23 @@ def build_parser() -> argparse.ArgumentParser:
                         help="input split size in bytes (any value is legal)")
     p_recv.add_argument("--json", action="store_true")
     p_recv.set_defaults(func=_cmd_receive)
+
+    p_compat = sub.add_parser(
+        "check-compat",
+        help="check captured history reads the same under a candidate config")
+    p_compat.add_argument("--current", required=True,
+                          help="approved configuration currently in use")
+    p_compat.add_argument("--candidate", required=True,
+                          help="configuration proposed as the replacement")
+    p_compat.add_argument("--history", required=True,
+                          help="line-oriented file: <record-id> <body-hex>")
+    p_compat.add_argument("--report",
+                          help="replace this report file atomically on success")
+    p_compat.add_argument("--max-product-states", type=int, default=None,
+                          help="fail-closed bound for the candidate audit")
+    p_compat.add_argument("--json", action="store_true",
+                          help="print a JSON summary instead of text")
+    p_compat.set_defaults(func=_cmd_check_compat)
     return parser
 
 
