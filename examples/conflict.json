@@ -1,0 +1,18 @@
+{
+  "version": "v2",
+  "wire": 2,
+  "codes": {
+    "A": "0a",
+    "B": "0a0b",
+    "C": "0b"
+  },
+  "flow": {
+    "start": "s",
+    "accepts": ["ok"],
+    "transitions": [
+      ["s", "A", "x"],
+      ["x", "C", "ok"],
+      ["s", "B", "ok"]
+    ]
+  }
+}

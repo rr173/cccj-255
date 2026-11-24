@@ -1,0 +1,17 @@
+{
+  "version": "v3",
+  "wire": 3,
+  "codes": {
+    "A": "0a",
+    "B": "0a0b",
+    "C": "0b"
+  },
+  "flow": {
+    "start": "s",
+    "accepts": ["ok"],
+    "transitions": [
+      ["s", "A", "ok"],
+      ["s", "B", "ok"]
+    ]
+  }
+}
