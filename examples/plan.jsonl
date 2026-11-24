@@ -1,0 +1,2 @@
+{"wire": 1, "actions": ["start", "stop"], "planned": 2}
+{"wire": 1, "actions": ["start", "increment", "stop"], "planned": 1}

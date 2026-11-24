@@ -5,7 +5,7 @@ each action is a non-empty byte code, and a frame body is just the concatenation
 of the codes for the actions in order. The receiving station wraps each body in an
 outer frame that names the terminal configuration version and the body length.
 
-This package does three jobs:
+This package does four jobs:
 
 1. **Offline release audit.** Decide, exactly, whether a configuration can ever
    produce *the same body for two different action sequences*. If it can, the
@@ -18,8 +18,12 @@ This package does three jobs:
    replay a captured history of frame bodies under both the current and the
    candidate configuration and report whether every record still names the same
    ordered actions. The candidate must pass the release audit first.
+4. **Batch reconciliation.** After a picking batch, reconcile a plan manifest
+   against one captured stream delivered as out-of-order, possibly duplicated
+   or overlapping retransmission fragments, and report planned versus
+   confirmed counts per `(wire, action sequence)`.
 
-All three live in `scanflow/`. No third-party dependencies; Python 3.9+.
+All four live in `scanflow/`. No third-party dependencies; Python 3.9+.
 
 ## The conflict rule
 
@@ -139,6 +143,29 @@ python3 -m scanflow.cli check-compat \
 # exit 0 replaceable, 3 not replaceable, 2 invalid evidence, 1 report write failed
 ```
 
+## Batch reconciliation
+
+After a picking batch, `check-batch` reconciles the planned scans against one
+captured stream. Terminals re-transmit from the original byte position after a
+disconnect, so the capture arrives as fragments that may be out of order,
+duplicated or partially overlapping; retransmitted bytes must be identical and
+count once. Only the contiguous known prefix from offset zero is interpreted
+(with the existing frame format) — never spliced across gaps. The evidence is
+complete only when the whole declared stream arrived with no noise, rejection
+or truncation; otherwise confirmed counts are lower bounds and no short/over
+verdict is issued. Plan, capture and result rows are all streamed through an
+on-disk store, so none of them is bounded by RAM. Full input and output
+formats: [`docs/batch-reconciliation.md`](docs/batch-reconciliation.md).
+
+```bash
+python3 -m scanflow.cli check-batch \
+    --config examples/good.json \
+    --plan examples/plan.jsonl --fragments examples/fragments.jsonl \
+    --stream-total 29 --report batch-report.json
+# exit 0 batch matches, 3 counts disagree, 4 evidence incomplete,
+#      2 invalid evidence, 1 report write failed
+```
+
 ## Usage
 
 ```bash
@@ -156,6 +183,12 @@ PYTHONPATH=. python3 -m scanflow.cli receive --config examples/good.json \
 PYTHONPATH=. python3 -m scanflow.cli check-compat \
     --current examples/good.json --candidate examples/good_next.json \
     --history examples/history.txt --report compat-report.json
+
+# Reconcile a picking batch: plan versus captured retransmission fragments
+PYTHONPATH=. python3 -m scanflow.cli check-batch \
+    --config examples/good.json \
+    --plan examples/plan.jsonl --fragments examples/fragments.jsonl \
+    --stream-total 29 --report batch-report.json
 ```
 
 Library:
@@ -181,8 +214,9 @@ PYTHONPATH=. python3 -I -m unittest discover -s tests -v
 
 The suite cross-checks the audit against exhaustive decoding on small random
 configurations, exercises every rejection path, verifies that arbitrary chunk
-boundaries produce identical events, and covers the compatibility check's verdict
-rules, streaming, and atomic report replacement.
+boundaries produce identical events, and covers the compatibility check's and
+the batch reconciliation's verdict rules, streaming, and atomic report
+replacement — including fragment reordering and retransmission invariance.
 
 ## Limits worth knowing
 
